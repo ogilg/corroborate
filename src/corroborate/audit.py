@@ -15,9 +15,16 @@ Reports:
     * NEAR-DUPLICATE  — two claims from different producers with ≈equal values
                         reading at least one overlapping data_path — likely
                         the same quantity in disguise.
-    * ORPHAN-MACRO    — claim's macro name never appears in any of the paper
-                        sources passed to ``audit()``. Only runs when
-                        ``paper_sources`` is provided.
+    * DEAD-TARGET     — claim's ``used_in`` references a prose section/appendix
+                        label that no longer exists in any paper source.
+    * ORPHAN-MACRO    — claim is declared to be used in prose (``used_in``
+                        contains an ``abstract``, ``sec:*``, or ``app:*`` entry),
+                        every referenced label exists, but the generated macro
+                        is never cited in the paper corpus. Claims with only
+                        ``fig:*`` / ``tbl:*`` targets are skipped — the macro
+                        not being in prose is expected when the plot embeds
+                        the number. Only runs when ``paper_sources`` is
+                        provided.
 
 The integrity checks are mechanical and cheap — they use only sidecar data
 and git metadata, never re-running producers.
@@ -77,7 +84,8 @@ class AuditReport:
     data_stale: list[tuple[Claim, str]]    # (claim, "<path> newer")
     collisions: list[Collision]            # same claim name in multiple sidecars
     near_duplicates: list[NearDuplicate]   # likely same quantity under two names
-    orphan_macros: list[tuple[Claim, str]] # (claim, macro_name) — macro never cited
+    dead_targets: list[tuple[Claim, str]]  # (claim, "missing_label1, missing_label2")
+    orphan_macros: list[tuple[Claim, str]] # (claim, macro_name) — prose citation missing
 
     @property
     def clean(self) -> bool:
@@ -91,6 +99,7 @@ class AuditReport:
             or self.data_stale
             or self.collisions
             or self.near_duplicates
+            or self.dead_targets
             or self.orphan_macros
         )
 
@@ -263,11 +272,32 @@ def _find_near_duplicates(
     return sorted(pairs.values(), key=lambda d: (d.claim_a, d.claim_b))
 
 
-def _find_orphan_macros(
+_LABEL_RE = re.compile(r"\\label\{([^}]+)\}")
+
+
+def _is_prose_target(label: str) -> bool:
+    """True for used_in entries that should drive prose citations."""
+    return label == "abstract" or label.startswith("sec:") or label.startswith("app:")
+
+
+def _find_target_and_citation_gaps(
     claims: list[Claim],
     paper_sources: list[Path],
-) -> list[tuple[Claim, str]]:
-    """Claims whose generated macro name never appears in any paper source."""
+) -> tuple[list[tuple[Claim, str]], list[tuple[Claim, str]]]:
+    """Return (dead_targets, orphan_macros) for claims with prose `used_in`.
+
+    Only claims with at least one prose-type `used_in` entry (abstract /
+    sec:* / app:*) are checked. Fig/table-only claims (figure-data docs) and
+    claims with no `used_in` are skipped.
+
+    DEAD-TARGET: any prose target in `used_in` whose `\\label{}` is absent
+    from the corpus. Checked first; when a claim hits this, it's not also
+    reported as ORPHAN-MACRO — fix the target pointer first.
+
+    ORPHAN-MACRO: all targets exist, but the claim's macro isn't cited
+    anywhere in the corpus. Scalar values look for literal `\\macro`;
+    structured values look for any `\\macroRowCol` cell citation.
+    """
     corpus_parts: list[str] = []
     for p in paper_sources:
         try:
@@ -276,13 +306,32 @@ def _find_orphan_macros(
             continue
     corpus = "\n".join(corpus_parts)
     if not corpus:
-        return []
+        return [], []
+
+    labels_in_corpus = set(_LABEL_RE.findall(corpus))
+    dead_targets: list[tuple[Claim, str]] = []
     orphans: list[tuple[Claim, str]] = []
+
     for c in claims:
-        macro = name_to_macro(c.name)
-        if f"\\{macro}" not in corpus:
-            orphans.append((c, macro))
-    return orphans
+        prose_targets = [t for t in c.used_in if _is_prose_target(t)]
+        if not prose_targets:
+            continue  # fig/tbl-only or unlabeled — not subject to prose check
+
+        missing = [t for t in prose_targets if t != "abstract" and t not in labels_in_corpus]
+        if missing:
+            dead_targets.append((c, ", ".join(missing)))
+            continue
+
+        base = name_to_macro(c.name)
+        if isinstance(c.value, dict):
+            pattern = re.compile(rf"\\{re.escape(base)}[A-Z]\w*\b")
+            cited = bool(pattern.search(corpus))
+        else:
+            cited = f"\\{base}" in corpus
+        if not cited:
+            orphans.append((c, base))
+
+    return dead_targets, orphans
 
 
 def audit(
@@ -339,7 +388,9 @@ def audit(
             data_stale.append((c, reason))
 
     near_duplicates = _find_near_duplicates(live_claims)
-    orphan_macros = _find_orphan_macros(live_claims, paper_source_paths)
+    dead_targets, orphan_macros = _find_target_and_citation_gaps(
+        live_claims, paper_source_paths
+    )
 
     return AuditReport(
         total_live=len(live),
@@ -356,6 +407,7 @@ def audit(
         data_stale=data_stale,
         collisions=collisions,
         near_duplicates=near_duplicates,
+        dead_targets=dead_targets,
         orphan_macros=orphan_macros,
     )
 
@@ -420,13 +472,22 @@ def print_report(report: AuditReport) -> None:
             if d.shared_data_paths:
                 print(f"    shared data: {', '.join(d.shared_data_paths)}")
         print()
+    if report.dead_targets:
+        print(
+            f"DEAD-TARGET ({len(report.dead_targets)}): claim's used_in references a "
+            "section/appendix label that no longer exists in any paper source"
+        )
+        for c, missing in report.dead_targets:
+            print(f"  {c.name}  [missing: {missing}]")
+        print()
     if report.orphan_macros:
         print(
-            f"ORPHAN-MACRO ({len(report.orphan_macros)}): claim's macro is defined but "
-            "never cited in any paper source"
+            f"ORPHAN-MACRO ({len(report.orphan_macros)}): claim has a prose used_in "
+            "target and every target label exists, but the macro is never cited"
         )
         for c, macro in report.orphan_macros[:20]:
-            print(f"  {c.name}  [\\{macro}]")
+            used = ", ".join(t for t in c.used_in if _is_prose_target(t))
+            print(f"  {c.name}  [\\{macro}; expected in: {used}]")
         if len(report.orphan_macros) > 20:
             print(f"  ... {len(report.orphan_macros) - 20} more")
         print()

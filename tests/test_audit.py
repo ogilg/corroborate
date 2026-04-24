@@ -53,13 +53,14 @@ def _write_sidecar(repo: Path, name: str, claim: dict, source: str) -> None:
     path.write_text(json.dumps({"source": source, "claims": [claim]}, indent=2))
 
 
-def _claim_dict(name, value, source, computed_at, data_paths=(), statement="s.", derivation=""):
+def _claim_dict(name, value, source, computed_at, data_paths=(), statement="s.",
+                derivation="", used_in=()):
     return {
         "name": name,
         "value": value,
         "statement": statement,
         "source": source,
-        "used_in": [],
+        "used_in": list(used_in),
         "computed_at": computed_at,
         "data_paths": list(data_paths),
         "derivation": derivation,
@@ -260,23 +261,131 @@ def test_orphan_macro_when_not_cited(tmp_path):
     _write_producer(repo, "scripts/p.py", 'claims.register("Cited r", 0.5, "s.")\nclaims.register("Dead r", 0.7, "s.")')
     _write_sidecar(
         repo, "a.json",
-        _claim_dict("Cited r", 0.5, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        _claim_dict("Cited r", 0.5, "scripts/p.py", "2099-01-01T00:00:00+00:00",
+                    used_in=["sec:results"]),
         "scripts/p.py",
     )
     _write_sidecar(
         repo, "b.json",
-        _claim_dict("Dead r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        _claim_dict("Dead r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00",
+                    used_in=["sec:results"]),
         "scripts/p.py",
     )
     _commit_all(repo, "init")
 
     paper = repo / "paper" / "main.tex"
-    paper.write_text(r"The result is $r = \citedR$.")
+    paper.write_text(r"\label{sec:results} The result is $r = \citedR$.")
 
     report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
     orphan_names = [c.name for c, _ in report.orphan_macros]
     assert "Dead r" in orphan_names
     assert "Cited r" not in orphan_names
+    assert report.dead_targets == []
+
+
+def test_orphan_macro_skipped_for_fig_only_claims(tmp_path):
+    """Claims with only fig:/tbl: used_in are figure-data docs — not flagged."""
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Fig r", 0.7, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Fig r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00",
+                    used_in=["fig:scatter"]),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+
+    paper = repo / "paper" / "main.tex"
+    paper.write_text(r"A figure is shown.")
+
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    assert report.orphan_macros == []
+
+
+def test_orphan_macro_skipped_when_no_used_in(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Floating r", 0.7, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Floating r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+
+    paper = repo / "paper" / "main.tex"
+    paper.write_text(r"Unrelated.")
+
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    assert report.orphan_macros == []
+
+
+def test_dead_target_when_label_missing(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Orphan r", 0.7, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Orphan r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00",
+                    used_in=["sec:gone"]),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+
+    paper = repo / "paper" / "main.tex"
+    paper.write_text(r"\label{sec:other} A different section.")
+
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    assert [c.name for c, _ in report.dead_targets] == ["Orphan r"]
+    assert "sec:gone" in report.dead_targets[0][1]
+    # Shouldn't double-report as orphan-macro — fix the target first.
+    assert report.orphan_macros == []
+
+
+def test_dead_target_abstract_always_accepted(tmp_path):
+    """'abstract' is a special construct — not a \\label{}, always valid."""
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Headline r", 0.7, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Headline r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00",
+                    used_in=["abstract"]),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+
+    paper = repo / "paper" / "main.tex"
+    # No labels, but abstract target shouldn't fire DEAD-TARGET.
+    paper.write_text(r"A paper with $r = \headlineR$.")
+
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    assert report.dead_targets == []
+    assert report.orphan_macros == []
+
+
+def test_orphan_macro_structured_value_matches_any_cell(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Cross d", {}, "s.")')
+    # Structured table claim: macro = crossD; cells like \crossDTruthEot.
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict(
+            "Cross d",
+            {"truth": {"eot": 1.45}, "harm": {"eot": -2.05}},
+            "scripts/p.py", "2099-01-01T00:00:00+00:00",
+            used_in=["sec:results"],
+        ),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+    paper = repo / "paper" / "main.tex"
+    paper.write_text(r"\label{sec:results} We use $d = \crossDTruthEot$ for truth.")
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    # At least one cell macro is cited → not orphan.
+    assert [c.name for c, _ in report.orphan_macros] == []
+
+    # Paper without any cell citation → orphan.
+    paper.write_text(r"\label{sec:results} No citation here.")
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    assert [c.name for c, _ in report.orphan_macros] == ["Cross d"]
 
 
 def test_orphan_macro_check_skipped_when_no_sources(tmp_path):
