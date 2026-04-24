@@ -1,0 +1,10 @@
+{
+  "name": "vernier",
+  "version": "0.1.0",
+  "description": "Register, verify, and audit numeric claims in documents. Every empirical number in prose or captions becomes a reproducible Claim with statement, source, data paths, and derivation.",
+  "author": {
+    "name": "Oscar Gilg",
+    "url": "https://github.com/ogilg"
+  },
+  "license": "MIT"
+}
