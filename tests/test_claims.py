@@ -106,3 +106,138 @@ def test_claims_md_content(tmp_path):
     assert "Some statement." in body
     assert "read x" in body
     assert "d.json" in body
+
+
+# -----------------------------------------------------------------------------
+# Structured values (row dicts and table dict-of-dicts).
+# -----------------------------------------------------------------------------
+
+
+def test_register_accepts_row_dict():
+    cs = ClaimSet(source="t.py")
+    cs.register("Gemma probe metrics", {"held_out_r": 0.905, "cross_topic_r": 0.756}, "stmt.")
+    assert cs.claims[0].value == {"held_out_r": 0.905, "cross_topic_r": 0.756}
+
+
+def test_register_accepts_table_dict():
+    cs = ClaimSet(source="t.py")
+    cs.register(
+        "Character probe",
+        {
+            "goodness": {"baseline_r": 0.376, "probe_r": 0.671, "best_layer": 20},
+            "humor":    {"baseline_r": 0.395, "probe_r": 0.687, "best_layer": 16},
+        },
+        "stmt.",
+    )
+    assert cs.claims[0].value["goodness"]["baseline_r"] == 0.376
+    assert cs.claims[0].value["humor"]["best_layer"] == 16
+
+
+def test_register_rejects_depth_three():
+    cs = ClaimSet(source="t.py")
+    with pytest.raises(TypeError, match="deeper than 2"):
+        cs.register("Nested", {"a": {"b": {"c": 1}}}, "stmt.")
+
+
+def test_register_rejects_bare_list():
+    cs = ClaimSet(source="t.py")
+    with pytest.raises(TypeError, match="scalar"):
+        cs.register("Listy", [1, 2, 3], "stmt.")
+
+
+def test_register_rejects_non_str_keys():
+    cs = ClaimSet(source="t.py")
+    with pytest.raises(TypeError, match="keys must be str"):
+        cs.register("Bad", {1: 0.5}, "stmt.")
+
+
+def test_register_rejects_empty_dict():
+    cs = ClaimSet(source="t.py")
+    with pytest.raises(ValueError, match="empty"):
+        cs.register("Empty", {}, "stmt.")
+
+
+def test_numbers_tex_flattens_row(tmp_path):
+    cs = ClaimSet(source="t.py")
+    cs.register("Gemma probe metrics",
+                {"held_out_r": 0.905, "cross_topic_r": 0.756},
+                "stmt.")
+    cs.save(tmp_path / "t.json")
+    claims = load_all(tmp_path)
+    out = tmp_path / "numbers.tex"
+    write_numbers_tex(claims, out)
+    body = out.read_text()
+    assert "\\newcommand{\\gemmaProbeMetricsHeldOutR}{0.905}" in body
+    assert "\\newcommand{\\gemmaProbeMetricsCrossTopicR}{0.756}" in body
+
+
+def test_numbers_tex_flattens_table(tmp_path):
+    cs = ClaimSet(source="t.py")
+    cs.register(
+        "Character probe",
+        {
+            "goodness": {"baseline_r": 0.376, "probe_r": 0.671},
+            "humor":    {"baseline_r": 0.395, "probe_r": 0.687},
+        },
+        "stmt.",
+    )
+    cs.save(tmp_path / "t.json")
+    claims = load_all(tmp_path)
+    out = tmp_path / "numbers.tex"
+    write_numbers_tex(claims, out)
+    body = out.read_text()
+    assert "\\newcommand{\\characterProbeGoodnessBaselineR}{0.376}" in body
+    assert "\\newcommand{\\characterProbeGoodnessProbeR}{0.671}" in body
+    assert "\\newcommand{\\characterProbeHumorBaselineR}{0.395}" in body
+    assert "\\newcommand{\\characterProbeHumorProbeR}{0.687}" in body
+
+
+def test_numbers_tex_cell_collides_with_scalar(tmp_path):
+    cs = ClaimSet(source="t.py")
+    cs.register("Gemma probe metrics held out r", 0.9, "scalar.")
+    cs.register("Gemma probe metrics", {"held_out_r": 0.9}, "row.")
+    cs.save(tmp_path / "t.json")
+    claims = load_all(tmp_path)
+    with pytest.raises(ValueError, match="collision"):
+        write_numbers_tex(claims, tmp_path / "out.tex")
+
+
+def test_claims_md_renders_table_inline(tmp_path):
+    cs = ClaimSet(source="t.py")
+    cs.register(
+        "Character probe",
+        {
+            "goodness": {"baseline_r": 0.376, "probe_r": 0.671},
+            "humor":    {"baseline_r": 0.395, "probe_r": 0.687},
+        },
+        "Per-character probe r.",
+    )
+    cs.save(tmp_path / "t.json")
+    claims = load_all(tmp_path)
+    out = tmp_path / "claims.md"
+    write_claims_md(claims, out)
+    body = out.read_text()
+    # one row for the claim (header + separator + 1 claim row = 3 table lines)
+    assert body.count("\n|") <= 4
+    assert "**goodness**: baseline_r=0.376, probe_r=0.671" in body
+    assert "**humor**: baseline_r=0.395, probe_r=0.687" in body
+
+
+def test_roundtrip_structured_value(tmp_path):
+    cs = ClaimSet(source="t.py")
+    table = {
+        "goodness": {"baseline_r": 0.376, "best_layer": 20},
+        "humor":    {"baseline_r": 0.395, "best_layer": 16},
+    }
+    cs.register("Character probe", table, "stmt.")
+    cs.save(tmp_path / "t.json")
+    claims = load_all(tmp_path)
+    assert len(claims) == 1
+    assert claims[0].value == table
+
+
+def test_audit_detects_cell_drift():
+    # Claim-level equality: changing a cell flips value inequality.
+    c1 = Claim(name="T", value={"a": {"x": 1}}, statement="s.", source="t.py")
+    c2 = Claim(name="T", value={"a": {"x": 2}}, statement="s.", source="t.py")
+    assert c1.value != c2.value
