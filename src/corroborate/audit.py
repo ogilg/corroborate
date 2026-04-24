@@ -38,6 +38,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Literal
 
 from corroborate.claims import Claim, ClaimValue, Collision, scan_sidecars
 from corroborate.renderers import name_to_macro
@@ -68,6 +69,29 @@ class NearDuplicate:
     shared_data_paths: tuple[str, ...]
 
 
+DuplicateVerdict = Literal["duplicate", "complementary", "unrelated", "uncertain"]
+DUPLICATE_VERDICTS: tuple[DuplicateVerdict, ...] = (
+    "duplicate", "complementary", "unrelated", "uncertain",
+)
+
+# A judge reads a NearDuplicate plus both full Claim objects and returns a
+# verdict + one-line rationale. Staying model-agnostic: the library ships a
+# reference Claude judge in `corroborate.judges.anthropic`, but any callable
+# with this signature works.
+DuplicateJudge = Callable[
+    ["NearDuplicate", Claim, Claim], tuple[DuplicateVerdict, str],
+]
+
+
+@dataclass(frozen=True)
+class ClassifiedDuplicate:
+    """A NearDuplicate pair after a judge has classified it."""
+
+    pair: NearDuplicate
+    verdict: DuplicateVerdict
+    rationale: str
+
+
 @dataclass
 class AuditReport:
     total_live: int
@@ -86,9 +110,22 @@ class AuditReport:
     near_duplicates: list[NearDuplicate]   # likely same quantity under two names
     dead_targets: list[tuple[Claim, str]]  # (claim, "missing_label1, missing_label2")
     orphan_macros: list[tuple[Claim, str]] # (claim, macro_name) — prose citation missing
+    # Only populated when ``duplicate_judge`` is passed to ``audit()``.
+    classified_duplicates: list[ClassifiedDuplicate] | None = None
 
     @property
     def clean(self) -> bool:
+        # Unclassified near-duplicates count against clean; a judge-returned
+        # "complementary" / "unrelated" does not. "duplicate" and "uncertain" do.
+        near_dup_counts = True
+        if self.classified_duplicates is not None:
+            outstanding = [
+                c for c in self.classified_duplicates
+                if c.verdict in ("duplicate", "uncertain")
+            ]
+            near_dup_counts = bool(outstanding)
+        else:
+            near_dup_counts = bool(self.near_duplicates)
         return not (
             self.added
             or self.removed
@@ -98,7 +135,7 @@ class AuditReport:
             or self.logic_stale
             or self.data_stale
             or self.collisions
-            or self.near_duplicates
+            or near_dup_counts
             or self.dead_targets
             or self.orphan_macros
         )
@@ -229,6 +266,47 @@ def _check_integrity(
     return orphan_reason, name_orphan_reason, logic_stale_reason, data_stale_reasons
 
 
+def classify_near_duplicates(
+    pairs: list[NearDuplicate],
+    claims_by_name: dict[str, Claim],
+    judge: DuplicateJudge,
+) -> list[ClassifiedDuplicate]:
+    """Run a judge over each NearDuplicate pair and collect verdicts.
+
+    Keeps the library model-agnostic: ``judge`` is any callable with the
+    ``DuplicateJudge`` signature. A reference Claude implementation lives in
+    ``corroborate.judges.anthropic``; plug in your own (OpenAI, local model,
+    heuristic) by matching that signature.
+
+    If a judge raises or returns an unrecognised verdict, the pair is marked
+    ``uncertain`` with the error message as the rationale — we never let a
+    flaky judge drop a pair silently.
+    """
+    results: list[ClassifiedDuplicate] = []
+    for p in pairs:
+        a = claims_by_name.get(p.claim_a)
+        b = claims_by_name.get(p.claim_b)
+        if a is None or b is None:
+            results.append(ClassifiedDuplicate(
+                p, "uncertain", "one side of the pair missing from registry",
+            ))
+            continue
+        try:
+            verdict, rationale = judge(p, a, b)
+        except Exception as exc:
+            results.append(ClassifiedDuplicate(
+                p, "uncertain", f"judge error: {type(exc).__name__}: {exc}",
+            ))
+            continue
+        if verdict not in DUPLICATE_VERDICTS:
+            results.append(ClassifiedDuplicate(
+                p, "uncertain", f"judge returned unknown verdict: {verdict!r}",
+            ))
+            continue
+        results.append(ClassifiedDuplicate(p, verdict, rationale))
+    return results
+
+
 def _find_near_duplicates(
     claims: list[Claim],
     tolerance: float = DEFAULT_NEAR_DUPLICATE_TOLERANCE,
@@ -338,11 +416,17 @@ def audit(
     claims_dir: Path | str,
     repo_root: Path | str | None = None,
     paper_sources: list[Path | str] | None = None,
+    duplicate_judge: DuplicateJudge | None = None,
 ) -> AuditReport:
     """Compare the current sidecars against git HEAD and check producer/data integrity.
 
     If ``paper_sources`` is provided, also check for orphan macros — claims whose
     generated macro name is never cited in any of the given files.
+
+    If ``duplicate_judge`` is provided, each NearDuplicate pair is sent to the
+    judge and classified into duplicate / complementary / unrelated / uncertain;
+    results appear in ``report.classified_duplicates``. Mechanical
+    ``near_duplicates`` is preserved alongside for visibility.
     """
     claims_dir = Path(claims_dir).resolve()
     if repo_root is None:
@@ -391,6 +475,11 @@ def audit(
     dead_targets, orphan_macros = _find_target_and_citation_gaps(
         live_claims, paper_source_paths
     )
+    classified_duplicates: list[ClassifiedDuplicate] | None = None
+    if duplicate_judge is not None:
+        classified_duplicates = classify_near_duplicates(
+            near_duplicates, live, duplicate_judge,
+        )
 
     return AuditReport(
         total_live=len(live),
@@ -409,6 +498,7 @@ def audit(
         near_duplicates=near_duplicates,
         dead_targets=dead_targets,
         orphan_macros=orphan_macros,
+        classified_duplicates=classified_duplicates,
     )
 
 
@@ -460,7 +550,35 @@ def print_report(report: AuditReport) -> None:
         for c, reason in report.data_stale:
             print(f"  {c.name}  [{reason}]")
         print()
-    if report.near_duplicates:
+    if report.classified_duplicates is not None:
+        by_verdict: dict[DuplicateVerdict, list[ClassifiedDuplicate]] = {
+            v: [c for c in report.classified_duplicates if c.verdict == v]
+            for v in DUPLICATE_VERDICTS
+        }
+        for header, verdict, body in [
+            ("AUTO-CONSOLIDATE",
+             "duplicate",
+             "judge marked these pairs as the same quantity — pick one and retire the other"),
+            ("NEEDS-REVIEW",
+             "uncertain",
+             "judge couldn't call it — human decision required"),
+            ("AUTO-DISMISS",
+             "complementary",
+             "judge marked these as related-but-distinct; kept here for transparency"),
+            ("AUTO-DISMISS",
+             "unrelated",
+             "judge marked these as coincidentally close; kept here for transparency"),
+        ]:
+            items = by_verdict[verdict]
+            if not items:
+                continue
+            print(f"{header} ({len(items)}): {body} [verdict={verdict}]")
+            for c in items:
+                print(f"  {c.pair.claim_a!r} ({c.pair.value_a}) <-> "
+                      f"{c.pair.claim_b!r} ({c.pair.value_b})")
+                print(f"    {c.rationale}")
+            print()
+    elif report.near_duplicates:
         print(
             f"NEAR-DUPLICATE ({len(report.near_duplicates)}): claims from different "
             "producers with ≈equal values and a shared data_path — candidates for "

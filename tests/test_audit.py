@@ -340,6 +340,63 @@ def test_dead_target_when_label_missing(tmp_path):
     assert report.orphan_macros == []
 
 
+def test_classify_near_duplicates_catches_judge_errors():
+    from corroborate import Claim, classify_near_duplicates
+    from corroborate.audit import NearDuplicate
+
+    pair = NearDuplicate(
+        claim_a="A", source_a="a.py", value_a=0.1,
+        claim_b="B", source_b="b.py", value_b=0.1,
+        shared_data_paths=(),
+    )
+    claim_a = Claim(name="A", value=0.1, statement="", source="a.py",
+                    used_in=(), computed_at="", data_paths=(), derivation="")
+    claim_b = Claim(name="B", value=0.1, statement="", source="b.py",
+                    used_in=(), computed_at="", data_paths=(), derivation="")
+
+    def crashing_judge(p, a, b):
+        raise RuntimeError("API down")
+
+    def bogus_verdict_judge(p, a, b):
+        return "garbage", "not a real verdict"
+
+    for judge in (crashing_judge, bogus_verdict_judge):
+        classified = classify_near_duplicates(
+            [pair], {"A": claim_a, "B": claim_b}, judge,
+        )
+        assert len(classified) == 1
+        assert classified[0].verdict == "uncertain"
+
+
+def test_audit_wires_duplicate_judge(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/a.py", 'claims.register("A", 0.87, "s.")')
+    _write_producer(repo, "scripts/b.py", 'claims.register("B", 0.87, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("A", 0.87, "scripts/a.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json"]),
+        "scripts/a.py",
+    )
+    _write_sidecar(
+        repo, "b.json",
+        _claim_dict("B", 0.87, "scripts/b.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json"]),
+        "scripts/b.py",
+    )
+    _commit_all(repo, "init")
+
+    def judge(pair, a, b):
+        return "duplicate", "same manifest, same operation"
+
+    report = audit(repo / "paper" / "claims", repo, duplicate_judge=judge)
+    assert report.classified_duplicates is not None
+    assert len(report.classified_duplicates) == 1
+    assert report.classified_duplicates[0].verdict == "duplicate"
+    # near_duplicates list is preserved alongside for visibility
+    assert len(report.near_duplicates) == 1
+
+
 def test_dead_target_abstract_always_accepted(tmp_path):
     """'abstract' is a special construct — not a \\label{}, always valid."""
     repo = _init_repo(tmp_path)
