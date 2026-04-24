@@ -1,5 +1,5 @@
 ---
-name: vernier:claim-log
+name: corroborate:claim-log
 description: >
   Log numeric claims added to a document into the claim registry. Argument
   $ARGUMENTS — optional. With no args, runs retrospectively over recent turns +
@@ -10,23 +10,23 @@ user-invocable: true
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob, AskUserQuestion, Agent
 ---
 
-# /vernier:claim-log $ARGUMENTS
+# /corroborate:claim-log $ARGUMENTS
 
 ## What the claim registry does
 
 Every empirical numeric value in a document is a **Claim**: a record with a human-readable name, the value, a declarative statement of what the number asserts, the source that produced it, the input data paths, and a one-line derivation (what to run with what to reproduce it).
 
-Typical layout in a project using vernier — **infer from the repo; these are defaults, not hardcoded**:
+Typical layout in a project using corroborate — **infer from the repo; these are defaults, not hardcoded**:
 
 - `paper/claims/*.json` — per-producer sidecars
 - `paper/claims.md` — generated audit surface (rebuilt from sidecars)
 - `paper/numbers.tex` (or equivalent) — generated macros for the document
-- `vernier build` / `python -m vernier.cli build` — rebuilds `claims.md` + macros
+- `corroborate build` / `python -m corroborate.cli build` — rebuilds `claims.md` + macros
 
-Producers import from the `vernier` package (installed as a dependency):
+Producers import from the `corroborate` package (installed as a dependency):
 
 ```python
-from vernier import ClaimSet
+from corroborate import ClaimSet
 ```
 
 If the project has no registry yet, ask before scaffolding.
@@ -36,13 +36,13 @@ If the project has no registry yet, ask before scaffolding.
 - **empty** → **retrospective**: scan recent conversation turns + `git diff` for numbers added or changed in documents; register each.
 - **prompt-like text** ("Update §3 with the new layer sweep numbers") → **prospective**: carry out the task, registering each numeric value as you write it, then summarize.
 - **single existing file path** (e.g., `paper/main.tex`) → **retrospective scoped to that file**.
-- **starts with `--commit`** → retrospective + run the project's build step at the end (`vernier build` or the project's wrapper).
+- **starts with `--commit`** → retrospective + run the project's build step at the end (`corroborate build` or the project's wrapper).
 - **ambiguous** → ask the user which mode.
 
 ## Registering a claim
 
 ```python
-from vernier import ClaimSet
+from corroborate import ClaimSet
 
 claims = ClaimSet(source="<repo-relative path to the producer script>")
 
@@ -65,7 +65,7 @@ claims.register(
 claims.save("paper/claims/<sidecar_name>.json")
 ```
 
-Then reference the auto-generated macro (check the generated macros file after `vernier build`) in the document instead of the literal numeral.
+Then reference the auto-generated macro (check the generated macros file after `corroborate build`) in the document instead of the literal numeral.
 
 **Prefer existing producers.** If a sidecar already covers the topic, add the new claim to its producer. Create a fresh compute script only when no existing producer fits.
 

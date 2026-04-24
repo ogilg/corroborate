@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from vernier import (
+from corroborate import (
     Claim,
     ClaimSet,
     load_all,

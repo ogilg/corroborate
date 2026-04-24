@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from vernier.claims import Claim, load_all
+from corroborate.claims import Claim, load_all
 
 
 @dataclass

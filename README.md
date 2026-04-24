@@ -1,6 +1,6 @@
-# vernier
+# corroborate
 
-> A vernier scale reads the digits between the digits. This plugin does the same for the claims in your papers.
+> A corroborate scale reads the digits between the digits. This plugin does the same for the claims in your papers.
 
 Register, verify, and audit numeric claims in documents. Every empirical number in prose or captions becomes a reproducible `Claim` — value, statement, source, data paths, derivation — so numbers trace back to data, stay in sync when data updates, and drift is visible.
 
@@ -8,12 +8,12 @@ Register, verify, and audit numeric claims in documents. Every empirical number 
 
 Papers and reports accumulate dozens-to-hundreds of numbers: Pearson rs, sample sizes, effect sizes, percentages. When a probe is refit or a dataset refreshed, the paper prose usually doesn't update automatically. Over a project's lifetime, numbers drift out of sync with the data that produced them, and the only way to catch it is manual proofreading.
 
-vernier makes each number a first-class object:
+corroborate makes each number a first-class object:
 
 - **One producer-side call** at the point the value is computed:
 
   ```python
-  from vernier import ClaimSet
+  from corroborate import ClaimSet
 
   claims = ClaimSet(source="scripts/probes/plot_cross_model_bar.py")
 
@@ -33,30 +33,30 @@ vernier makes each number a first-class object:
   - `paper/claims.md` — a human-scannable table with every claim, its statement, source, and derivation. The audit surface.
   - Per-producer sidecars at `paper/claims/*.json` — checked into git.
 
-- **One audit command** (`vernier audit`) that diffs live sidecars against git HEAD, surfacing changed / added / removed / manual / superseded claims.
+- **One audit command** (`corroborate audit`) that diffs live sidecars against git HEAD, surfacing changed / added / removed / manual / superseded claims.
 
 ## Install
 
 Still in early development; install from source:
 
 ```sh
-uv pip install -e /path/to/vernier
+uv pip install -e /path/to/corroborate
 ```
 
 ## Claude Code plugin
 
-vernier ships with a `/claim-log` skill (invoked as `vernier:claim-log`) that an agent can run in two modes:
+corroborate ships with a `/claim-log` skill (invoked as `corroborate:claim-log`) that an agent can run in two modes:
 
-- **Retrospective** — `vernier:claim-log` with no args scans recent conversation + `git diff` and registers any new numbers it finds.
-- **Prospective** — `vernier:claim-log Update §3 with the layer-sweep results` runs the described task, registering every number as it writes.
+- **Retrospective** — `corroborate:claim-log` with no args scans recent conversation + `git diff` and registers any new numbers it finds.
+- **Prospective** — `corroborate:claim-log Update §3 with the layer-sweep results` runs the described task, registering every number as it writes.
 
 The skill handles the full lifecycle: registering new claims, superseding old ones, and flagging discrepancies in a standard `CLAIMS_ISSUES.md` format with a `nature` taxonomy (discrepancy / stale / missing-data / unreconciled-source / ambiguous-provenance / manual-pending-compute / orphan).
 
 ## CLI
 
 ```sh
-vernier build     # merge sidecars → numbers.tex + claims.md
-vernier audit     # diff live against committed state
+corroborate build     # merge sidecars → numbers.tex + claims.md
+corroborate audit     # diff live against committed state
 ```
 
 Defaults assume `paper/claims/`, `paper/claims.md`, `paper/numbers.tex`. Override via flags.

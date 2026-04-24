@@ -11,7 +11,7 @@ Provenance fields make claims reproducible:
   - `data_paths`: input files an auditor would read to reproduce
   - `derivation`:  one-line reproduction recipe
 
-Deliberately renderer-agnostic — `write_*` helpers live in `vernier.renderers`.
+Deliberately renderer-agnostic — `write_*` helpers live in `corroborate.renderers`.
 """
 
 from __future__ import annotations

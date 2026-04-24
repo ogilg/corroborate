@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from vernier.claims import load_all
-from vernier.renderers import write_claims_md, write_numbers_tex
+from corroborate.claims import load_all
+from corroborate.renderers import write_claims_md, write_numbers_tex
 
 
 @dataclass

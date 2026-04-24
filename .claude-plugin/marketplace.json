@@ -1,0 +1,11 @@
+{
+  "name": "corroborate-local",
+  "owner": { "name": "ogilg" },
+  "plugins": [
+    {
+      "name": "corroborate",
+      "source": "./",
+      "description": "Register, verify, and audit numeric claims in documents. Every empirical number becomes a reproducible Claim an agent can verify against data."
+    }
+  ]
+}

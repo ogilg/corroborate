@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vernier"
+name = "corroborate"
 version = "0.1.0"
 description = "Register, verify, and audit numeric claims in documents."
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = []
 dev = ["pytest"]
 
 [project.scripts]
-vernier = "vernier.cli:main"
+corroborate = "corroborate.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vernier"]
+packages = ["src/corroborate"]

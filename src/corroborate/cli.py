@@ -1,4 +1,4 @@
-"""Command-line entry point: `vernier build` and `vernier audit`.
+"""Command-line entry point: `corroborate build` and `corroborate audit`.
 
 Intended to be called from project-local scripts that know the project's
 paths; this CLI supplies generic defaults but configurable via flags.
@@ -9,12 +9,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from vernier.audit import audit, print_report
-from vernier.build import BuildPaths, build
+from corroborate.audit import audit, print_report
+from corroborate.build import BuildPaths, build
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="vernier", description="Claims registry tooling.")
+    parser = argparse.ArgumentParser(prog="corroborate", description="Claims registry tooling.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="Build claims.md + numbers.tex from sidecars.")
