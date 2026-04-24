@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from corroborate.claims import Claim, load_all
+from corroborate.claims import Claim, Collision, scan_sidecars
 
 
 _TAG_PREFIXES = ("manual:", "superseded:", "frozen:")
@@ -44,6 +44,7 @@ class AuditReport:
     name_orphan: list[tuple[Claim, str]]
     logic_stale: list[tuple[Claim, str]]   # (claim, "producer edited YYYY-MM-DD")
     data_stale: list[tuple[Claim, str]]    # (claim, "<path> newer")
+    collisions: list[Collision]            # same claim name in multiple sidecars
 
     @property
     def clean(self) -> bool:
@@ -55,6 +56,7 @@ class AuditReport:
             or self.name_orphan
             or self.logic_stale
             or self.data_stale
+            or self.collisions
         )
 
 
@@ -190,7 +192,8 @@ def audit(claims_dir: Path | str, repo_root: Path | str | None = None) -> AuditR
         repo_root = claims_dir
     repo_root = Path(repo_root).resolve()
 
-    live = {c.name: c for c in load_all(claims_dir)}
+    live_claims, collisions = scan_sidecars(claims_dir)
+    live = {c.name: c for c in live_claims}
     committed = _load_committed(claims_dir, repo_root)
 
     added = sorted(set(live) - set(committed))
@@ -239,6 +242,7 @@ def audit(claims_dir: Path | str, repo_root: Path | str | None = None) -> AuditR
         name_orphan=name_orphan,
         logic_stale=logic_stale,
         data_stale=data_stale,
+        collisions=collisions,
     )
 
 
@@ -246,6 +250,14 @@ def print_report(report: AuditReport) -> None:
     print(f"Total live claims: {report.total_live}")
     print(f"Committed baseline: {report.committed_baseline}")
     print()
+    if report.collisions:
+        print(
+            f"COLLISION ({len(report.collisions)}): same claim name registered in "
+            "multiple sidecars — first-wins dedup applied; rest of audit may be incomplete"
+        )
+        for col in report.collisions:
+            print(f"  {col.name!r}  [{col.first_sidecar} + {col.duplicate_sidecar}]")
+        print()
     if report.changed:
         print(f"CHANGED ({len(report.changed)}):")
         for prior, live in report.changed:

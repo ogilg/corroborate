@@ -9,8 +9,10 @@ import pytest
 from corroborate import (
     Claim,
     ClaimSet,
+    Collision,
     load_all,
     name_to_macro,
+    scan_sidecars,
     write_claims_md,
     write_numbers_tex,
 )
@@ -61,6 +63,33 @@ def test_cross_sidecar_name_collision(tmp_path):
     b.save(tmp_path / "b.json")
     with pytest.raises(ValueError, match="collision"):
         load_all(tmp_path)
+
+
+def test_scan_sidecars_reports_collisions(tmp_path):
+    a = ClaimSet(source="a.py")
+    a.register("dup1", 1, "A.")
+    a.register("uniq", 10, "U.")
+    a.save(tmp_path / "a.json")
+    b = ClaimSet(source="b.py")
+    b.register("dup1", 2, "B.")
+    b.register("dup2", 3, "B2.")
+    b.save(tmp_path / "b.json")
+    c = ClaimSet(source="c.py")
+    c.register("dup2", 4, "C.")
+    c.save(tmp_path / "c.json")
+
+    claims, collisions = scan_sidecars(tmp_path)
+
+    # First-wins dedup: uniq, dup1 (from a), dup2 (from b) survive.
+    names = {cl.name for cl in claims}
+    assert names == {"uniq", "dup1", "dup2"}
+    assert next(cl for cl in claims if cl.name == "dup1").value == 1
+    assert next(cl for cl in claims if cl.name == "dup2").value == 3
+
+    assert collisions == [
+        Collision(name="dup1", first_sidecar="a.json", duplicate_sidecar="b.json"),
+        Collision(name="dup2", first_sidecar="b.json", duplicate_sidecar="c.json"),
+    ]
 
 
 def test_name_to_macro_rules():

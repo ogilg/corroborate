@@ -2,7 +2,7 @@
 
 from corroborate.audit import AuditReport, audit
 from corroborate.build import BuildPaths, build
-from corroborate.claims import Claim, ClaimSet, load_all
+from corroborate.claims import Claim, ClaimSet, Collision, load_all, scan_sidecars
 from corroborate.renderers import name_to_macro, write_claims_md, write_numbers_tex
 
 __all__ = [
@@ -10,10 +10,12 @@ __all__ = [
     "BuildPaths",
     "Claim",
     "ClaimSet",
+    "Collision",
     "audit",
     "build",
     "load_all",
     "name_to_macro",
+    "scan_sidecars",
     "write_claims_md",
     "write_numbers_tex",
 ]

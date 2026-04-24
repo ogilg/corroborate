@@ -165,20 +165,47 @@ class ClaimSet:
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def load_all(claims_dir: Path | str) -> list[Claim]:
-    """Load and merge every sidecar in `claims_dir`. Raises on name collision."""
+@dataclass(frozen=True)
+class Collision:
+    """A claim name registered in more than one sidecar."""
+
+    name: str
+    first_sidecar: str
+    duplicate_sidecar: str
+
+
+def scan_sidecars(claims_dir: Path | str) -> tuple[list[Claim], list[Collision]]:
+    """Load every sidecar in `claims_dir`, returning (claims, collisions).
+
+    First-wins dedup: when a name appears twice, the first occurrence is kept
+    and the duplicate is recorded as a `Collision`. Use this when you want the
+    auditor to continue past collisions; use `load_all` when you want a hard
+    failure.
+    """
     claims_dir = Path(claims_dir)
     claims: list[Claim] = []
     seen: dict[str, str] = {}
+    collisions: list[Collision] = []
     for sidecar in sorted(claims_dir.glob("*.json")):
         payload = json.loads(sidecar.read_text())
         for raw in payload["claims"]:
             c = Claim.from_dict(raw)
             if c.name in seen:
-                raise ValueError(
-                    f"Claim name collision: {c.name!r} in {sidecar.name} "
-                    f"and {seen[c.name]}"
-                )
+                collisions.append(Collision(c.name, seen[c.name], sidecar.name))
+                continue
             seen[c.name] = sidecar.name
             claims.append(c)
+    return claims, collisions
+
+
+def load_all(claims_dir: Path | str) -> list[Claim]:
+    """Load and merge every sidecar in `claims_dir`. Raises on name collision."""
+    claims, collisions = scan_sidecars(claims_dir)
+    if collisions:
+        first = collisions[0]
+        suffix = f" (+{len(collisions) - 1} more)" if len(collisions) > 1 else ""
+        raise ValueError(
+            f"Claim name collision: {first.name!r} in {first.duplicate_sidecar} "
+            f"and {first.first_sidecar}{suffix}"
+        )
     return claims
