@@ -186,3 +186,107 @@ def test_manual_and_superseded_still_work(tmp_path):
     assert [c.name for c in report.manual] == ["M"]
     assert [c.name for c in report.superseded] == ["S"]
     assert not report.orphan and not report.name_orphan
+
+
+def test_near_duplicate_close_values_and_shared_data_path(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/a.py", 'claims.register("Alpha r", 0.87, "s.")')
+    _write_producer(repo, "scripts/b.py", 'claims.register("Beta r", 0.88, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Alpha r", 0.87, "scripts/a.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json"]),
+        "scripts/a.py",
+    )
+    _write_sidecar(
+        repo, "b.json",
+        _claim_dict("Beta r", 0.88, "scripts/b.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json", "data/other.json"]),
+        "scripts/b.py",
+    )
+    _commit_all(repo, "init")
+
+    report = audit(repo / "paper" / "claims", repo)
+    assert len(report.near_duplicates) == 1
+    pair = report.near_duplicates[0]
+    assert {pair.claim_a, pair.claim_b} == {"Alpha r", "Beta r"}
+    assert pair.shared_data_paths == ("data/shared.json",)
+
+
+def test_near_duplicate_skipped_when_values_diverge(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/a.py", 'claims.register("Alpha r", 0.30, "s.")')
+    _write_producer(repo, "scripts/b.py", 'claims.register("Beta r", 0.80, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Alpha r", 0.30, "scripts/a.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json"]),
+        "scripts/a.py",
+    )
+    _write_sidecar(
+        repo, "b.json",
+        _claim_dict("Beta r", 0.80, "scripts/b.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/shared.json"]),
+        "scripts/b.py",
+    )
+    _commit_all(repo, "init")
+    report = audit(repo / "paper" / "claims", repo)
+    assert report.near_duplicates == []
+
+
+def test_near_duplicate_skipped_when_no_shared_path(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/a.py", 'claims.register("Alpha r", 0.87, "s.")')
+    _write_producer(repo, "scripts/b.py", 'claims.register("Beta r", 0.88, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Alpha r", 0.87, "scripts/a.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/a.json"]),
+        "scripts/a.py",
+    )
+    _write_sidecar(
+        repo, "b.json",
+        _claim_dict("Beta r", 0.88, "scripts/b.py", "2099-01-01T00:00:00+00:00",
+                    data_paths=["data/b.json"]),
+        "scripts/b.py",
+    )
+    _commit_all(repo, "init")
+    report = audit(repo / "paper" / "claims", repo)
+    assert report.near_duplicates == []
+
+
+def test_orphan_macro_when_not_cited(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Cited r", 0.5, "s.")\nclaims.register("Dead r", 0.7, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Cited r", 0.5, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        "scripts/p.py",
+    )
+    _write_sidecar(
+        repo, "b.json",
+        _claim_dict("Dead r", 0.7, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+
+    paper = repo / "paper" / "main.tex"
+    paper.write_text(r"The result is $r = \citedR$.")
+
+    report = audit(repo / "paper" / "claims", repo, paper_sources=[paper])
+    orphan_names = [c.name for c, _ in report.orphan_macros]
+    assert "Dead r" in orphan_names
+    assert "Cited r" not in orphan_names
+
+
+def test_orphan_macro_check_skipped_when_no_sources(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_producer(repo, "scripts/p.py", 'claims.register("Uncited r", 0.5, "s.")')
+    _write_sidecar(
+        repo, "a.json",
+        _claim_dict("Uncited r", 0.5, "scripts/p.py", "2099-01-01T00:00:00+00:00"),
+        "scripts/p.py",
+    )
+    _commit_all(repo, "init")
+    report = audit(repo / "paper" / "claims", repo)
+    assert report.orphan_macros == []

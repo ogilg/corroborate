@@ -10,6 +10,14 @@ Reports:
     * LOGIC-STALE   — source file's last-commit timestamp is newer than the
                       claim's computed_at.
     * DATA-STALE    — any data_path has mtime newer than computed_at.
+  - Registry hygiene:
+    * COLLISION       — same claim name registered in multiple sidecars.
+    * NEAR-DUPLICATE  — two claims from different producers with ≈equal values
+                        reading at least one overlapping data_path — likely
+                        the same quantity in disguise.
+    * ORPHAN-MACRO    — claim's macro name never appears in any of the paper
+                        sources passed to ``audit()``. Only runs when
+                        ``paper_sources`` is provided.
 
 The integrity checks are mechanical and cheap — they use only sidecar data
 and git metadata, never re-running producers.
@@ -24,10 +32,33 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from corroborate.claims import Claim, Collision, scan_sidecars
+from corroborate.claims import Claim, ClaimValue, Collision, scan_sidecars
+from corroborate.renderers import name_to_macro
 
 
 _TAG_PREFIXES = ("manual:", "superseded:", "frozen:")
+
+DEFAULT_NEAR_DUPLICATE_TOLERANCE = 0.05  # 5% relative
+
+
+@dataclass(frozen=True)
+class NearDuplicate:
+    """Two claims that likely measure the same quantity.
+
+    Detected when claims from different producers have ≈equal numeric values
+    and read at least one common `data_paths` entry. False positive rate is
+    low because shared raw data + close values is a strong signal; false
+    negative rate is real (orphan-experiment pairs like L25 vs L23 that read
+    different files won't be caught).
+    """
+
+    claim_a: str
+    source_a: str
+    value_a: ClaimValue
+    claim_b: str
+    source_b: str
+    value_b: ClaimValue
+    shared_data_paths: tuple[str, ...]
 
 
 @dataclass
@@ -45,6 +76,8 @@ class AuditReport:
     logic_stale: list[tuple[Claim, str]]   # (claim, "producer edited YYYY-MM-DD")
     data_stale: list[tuple[Claim, str]]    # (claim, "<path> newer")
     collisions: list[Collision]            # same claim name in multiple sidecars
+    near_duplicates: list[NearDuplicate]   # likely same quantity under two names
+    orphan_macros: list[tuple[Claim, str]] # (claim, macro_name) — macro never cited
 
     @property
     def clean(self) -> bool:
@@ -57,6 +90,8 @@ class AuditReport:
             or self.logic_stale
             or self.data_stale
             or self.collisions
+            or self.near_duplicates
+            or self.orphan_macros
         )
 
 
@@ -185,12 +220,86 @@ def _check_integrity(
     return orphan_reason, name_orphan_reason, logic_stale_reason, data_stale_reasons
 
 
-def audit(claims_dir: Path | str, repo_root: Path | str | None = None) -> AuditReport:
-    """Compare the current sidecars against git HEAD and check producer/data integrity."""
+def _find_near_duplicates(
+    claims: list[Claim],
+    tolerance: float = DEFAULT_NEAR_DUPLICATE_TOLERANCE,
+) -> list[NearDuplicate]:
+    """Pairs of claims from different producers with ≈equal numeric values that
+    read at least one common data_path. One reported pair per (name_a, name_b).
+    """
+    numeric: list[Claim] = []
+    for c in claims:
+        if isinstance(c.value, bool):
+            continue  # bools subclass int in Python — exclude
+        if isinstance(c.value, (int, float)) and c.data_paths:
+            numeric.append(c)
+
+    by_path: dict[str, list[Claim]] = {}
+    for c in numeric:
+        for p in c.data_paths:
+            by_path.setdefault(p, []).append(c)
+
+    pairs: dict[tuple[str, str], NearDuplicate] = {}
+    for group in by_path.values():
+        if len(group) < 2:
+            continue
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if a.source == b.source:
+                    continue
+                key = tuple(sorted((a.name, b.name)))
+                if key in pairs:
+                    continue
+                va, vb = float(a.value), float(b.value)
+                denom = max(abs(va), abs(vb), 1e-9)
+                if abs(va - vb) / denom > tolerance:
+                    continue
+                shared = tuple(sorted(set(a.data_paths) & set(b.data_paths)))
+                pairs[key] = NearDuplicate(
+                    claim_a=a.name, source_a=a.source, value_a=a.value,
+                    claim_b=b.name, source_b=b.source, value_b=b.value,
+                    shared_data_paths=shared,
+                )
+    return sorted(pairs.values(), key=lambda d: (d.claim_a, d.claim_b))
+
+
+def _find_orphan_macros(
+    claims: list[Claim],
+    paper_sources: list[Path],
+) -> list[tuple[Claim, str]]:
+    """Claims whose generated macro name never appears in any paper source."""
+    corpus_parts: list[str] = []
+    for p in paper_sources:
+        try:
+            corpus_parts.append(p.read_text())
+        except (OSError, UnicodeDecodeError):
+            continue
+    corpus = "\n".join(corpus_parts)
+    if not corpus:
+        return []
+    orphans: list[tuple[Claim, str]] = []
+    for c in claims:
+        macro = name_to_macro(c.name)
+        if f"\\{macro}" not in corpus:
+            orphans.append((c, macro))
+    return orphans
+
+
+def audit(
+    claims_dir: Path | str,
+    repo_root: Path | str | None = None,
+    paper_sources: list[Path | str] | None = None,
+) -> AuditReport:
+    """Compare the current sidecars against git HEAD and check producer/data integrity.
+
+    If ``paper_sources`` is provided, also check for orphan macros — claims whose
+    generated macro name is never cited in any of the given files.
+    """
     claims_dir = Path(claims_dir).resolve()
     if repo_root is None:
         repo_root = claims_dir
     repo_root = Path(repo_root).resolve()
+    paper_source_paths = [Path(p) for p in (paper_sources or [])]
 
     live_claims, collisions = scan_sidecars(claims_dir)
     live = {c.name: c for c in live_claims}
@@ -229,6 +338,9 @@ def audit(claims_dir: Path | str, repo_root: Path | str | None = None) -> AuditR
         for reason in data_s:
             data_stale.append((c, reason))
 
+    near_duplicates = _find_near_duplicates(live_claims)
+    orphan_macros = _find_orphan_macros(live_claims, paper_source_paths)
+
     return AuditReport(
         total_live=len(live),
         committed_baseline=len(committed),
@@ -243,6 +355,8 @@ def audit(claims_dir: Path | str, repo_root: Path | str | None = None) -> AuditR
         logic_stale=logic_stale,
         data_stale=data_stale,
         collisions=collisions,
+        near_duplicates=near_duplicates,
+        orphan_macros=orphan_macros,
     )
 
 
@@ -293,6 +407,28 @@ def print_report(report: AuditReport) -> None:
         print(f"DATA-STALE ({len(report.data_stale)}): input newer than claim")
         for c, reason in report.data_stale:
             print(f"  {c.name}  [{reason}]")
+        print()
+    if report.near_duplicates:
+        print(
+            f"NEAR-DUPLICATE ({len(report.near_duplicates)}): claims from different "
+            "producers with ≈equal values and a shared data_path — candidates for "
+            "consolidation"
+        )
+        for d in report.near_duplicates:
+            print(f"  {d.claim_a!r} ({d.value_a}) <-> {d.claim_b!r} ({d.value_b})")
+            print(f"    sources: {d.source_a} + {d.source_b}")
+            if d.shared_data_paths:
+                print(f"    shared data: {', '.join(d.shared_data_paths)}")
+        print()
+    if report.orphan_macros:
+        print(
+            f"ORPHAN-MACRO ({len(report.orphan_macros)}): claim's macro is defined but "
+            "never cited in any paper source"
+        )
+        for c, macro in report.orphan_macros[:20]:
+            print(f"  {c.name}  [\\{macro}]")
+        if len(report.orphan_macros) > 20:
+            print(f"  ... {len(report.orphan_macros) - 20} more")
         print()
     if report.superseded:
         print(f"SUPERSEDED ({len(report.superseded)}):")

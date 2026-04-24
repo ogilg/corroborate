@@ -1,6 +1,6 @@
 """corroborate — register, verify, and audit numeric claims in documents."""
 
-from corroborate.audit import AuditReport, audit
+from corroborate.audit import AuditReport, NearDuplicate, audit
 from corroborate.build import BuildPaths, build
 from corroborate.claims import Claim, ClaimSet, Collision, load_all, scan_sidecars
 from corroborate.renderers import name_to_macro, write_claims_md, write_numbers_tex
@@ -11,6 +11,7 @@ __all__ = [
     "Claim",
     "ClaimSet",
     "Collision",
+    "NearDuplicate",
     "audit",
     "build",
     "load_all",
