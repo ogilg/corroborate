@@ -23,7 +23,46 @@ from pathlib import Path
 from typing import Union
 
 
-ClaimValue = Union[float, int, str]
+Scalar = Union[float, int, str, bool]
+Row = dict[str, Scalar]
+Table = dict[str, dict[str, Scalar]]
+ClaimValue = Union[Scalar, Row, Table]
+
+
+def _validate_value(value: object) -> None:
+    """Reject shapes we don't support. Scalars, 1-D row dicts, and 2-D table dicts only."""
+    if isinstance(value, bool) or isinstance(value, (int, float, str)):
+        return
+    if not isinstance(value, dict):
+        raise TypeError(
+            f"Claim value must be a scalar (int/float/str/bool) or a dict of cells; "
+            f"got {type(value).__name__}"
+        )
+    if not value:
+        raise ValueError("Claim value dict is empty")
+    for k, v in value.items():
+        if not isinstance(k, str):
+            raise TypeError(f"Claim value dict keys must be str; got {type(k).__name__}")
+        if isinstance(v, bool) or isinstance(v, (int, float, str)):
+            continue
+        if not isinstance(v, dict):
+            raise TypeError(
+                f"Cell {k!r}: values must be scalars or inner dicts (tables); "
+                f"got {type(v).__name__}"
+            )
+        if not v:
+            raise ValueError(f"Inner table row {k!r} is empty")
+        for ik, iv in v.items():
+            if not isinstance(ik, str):
+                raise TypeError(
+                    f"Inner table row {k!r}: column keys must be str; got {type(ik).__name__}"
+                )
+            if isinstance(iv, bool) or isinstance(iv, (int, float, str)):
+                continue
+            raise TypeError(
+                f"Table cell [{k!r}][{ik!r}]: must be scalar; got {type(iv).__name__}. "
+                "Nesting deeper than 2 levels is not supported."
+            )
 
 
 @dataclass(frozen=True)
@@ -101,6 +140,7 @@ class ClaimSet:
         """
         if any(c.name == name for c in self.claims):
             raise ValueError(f"Duplicate claim name within producer: {name!r}")
+        _validate_value(value)
         self.claims.append(
             Claim(
                 name=name,

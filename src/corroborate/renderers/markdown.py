@@ -10,7 +10,7 @@ from pathlib import Path
 from corroborate.claims import Claim, ClaimValue
 
 
-def _format_value(value: ClaimValue) -> str:
+def _format_scalar(value) -> str:
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, int):
@@ -18,6 +18,19 @@ def _format_value(value: ClaimValue) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+def _format_value(value) -> str:
+    if not isinstance(value, dict):
+        return _format_scalar(value)
+    any_v = next(iter(value.values()))
+    if not isinstance(any_v, dict):
+        return "<br>".join(f"{k}={_format_scalar(v)}" for k, v in value.items())
+    rows = []
+    for row_key, inner in value.items():
+        cells = ", ".join(f"{ik}={_format_scalar(iv)}" for ik, iv in inner.items())
+        rows.append(f"**{row_key}**: {cells}")
+    return "<br>".join(rows)
 
 
 def _md_escape(s: str) -> str:

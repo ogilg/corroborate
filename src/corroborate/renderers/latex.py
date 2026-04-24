@@ -50,7 +50,7 @@ def name_to_macro(name: str) -> str:
     return "".join(pieces)
 
 
-def _format_value(value: ClaimValue) -> str:
+def _format_value(value) -> str:
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, int):
@@ -64,6 +64,34 @@ def _tex_escape(s: str) -> str:
     return s.replace("\\", "\\textbackslash{}").replace("%", "\\%")
 
 
+def _cap_first(s: str) -> str:
+    return s[:1].upper() + s[1:] if s else s
+
+
+def _iter_leaf_macros(claim_name: str, value):
+    """Yield (macro_slug, scalar_value, comment_suffix) for each leaf cell.
+
+    - Scalar: one yield with empty comment_suffix.
+    - Row dict: one yield per key.
+    - Table (dict-of-dicts): one yield per (row_key, col_key).
+    """
+    base = name_to_macro(claim_name)
+    if not isinstance(value, dict):
+        yield base, value, ""
+        return
+    any_value = next(iter(value.values()))
+    is_table = isinstance(any_value, dict)
+    if not is_table:
+        for col_key, cell in value.items():
+            yield base + _cap_first(name_to_macro(col_key)), cell, f".{col_key}"
+        return
+    for row_key, inner in value.items():
+        row_seg = _cap_first(name_to_macro(row_key))
+        for col_key, cell in inner.items():
+            col_seg = _cap_first(name_to_macro(col_key))
+            yield base + row_seg + col_seg, cell, f".{row_key}.{col_key}"
+
+
 def write_numbers_tex(
     claims: list[Claim],
     path: Path | str,
@@ -73,20 +101,20 @@ def write_numbers_tex(
         "% Each macro's value comes from a claim sidecar.\n"
     ),
 ) -> None:
-    r"""Emit ``\newcommand{\macroName}{value}`` for every claim."""
+    r"""Emit ``\newcommand{\macroName}{value}`` for every claim (and every cell of table claims)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [header.rstrip("\n"), ""]
     macros_seen: dict[str, str] = {}
     for c in claims:
-        macro = name_to_macro(c.name)
-        if macro in macros_seen:
-            raise ValueError(
-                f"Macro collision: {macro!r} from {c.name!r} conflicts with "
-                f"{macros_seen[macro]!r}"
-            )
-        macros_seen[macro] = c.name
-        body = _format_value(c.value)
-        lines.append(f"% {_tex_escape(c.name)}")
-        lines.append(f"\\newcommand{{\\{macro}}}{{{body}}}")
+        for macro, leaf, suffix in _iter_leaf_macros(c.name, c.value):
+            if macro in macros_seen:
+                raise ValueError(
+                    f"Macro collision: {macro!r} from {c.name + suffix!r} conflicts with "
+                    f"{macros_seen[macro]!r}"
+                )
+            macros_seen[macro] = c.name + suffix
+            body = _format_value(leaf)
+            lines.append(f"% {_tex_escape(c.name + suffix)}")
+            lines.append(f"\\newcommand{{\\{macro}}}{{{body}}}")
     path.write_text("\n".join(lines) + "\n")
