@@ -1,5 +1,7 @@
 # corroborate
 
+> ⚠️ **Work in progress.** APIs, registry format, and CLI are unstable and may change without notice.
+
 > A corroborate scale reads the digits between the digits. This plugin does the same for the claims in your papers.
 
 Register, verify, and audit numeric claims in documents. Every empirical number in prose or captions becomes a reproducible `Claim` — value, statement, source, data paths, derivation — so numbers trace back to data, stay in sync when data updates, and drift is visible.
